@@ -120,9 +120,7 @@ where
         let samples_per_channel = {if channels.len() > 0 {channels[0].len()} else {0}};
         if samples_per_channel == 0 {
             if self.delete_empty {
-
                 println!("deleting file because it's empty: {:?}", path);
-                // TODO: delete it
                 if let Err(e) = fs::remove_file(path) {
                     println!("Couldn't remove file: {:?}\nerr: {}", path, e);
                     return Err(e.to_string());
