@@ -2,3 +2,5 @@
 /samples
 /original_samples
 /.wavignore
+/*.bat
+/testing
