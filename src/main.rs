@@ -398,11 +398,13 @@ where
             // check if you should create a subdirectory
             let create_subdir: bool = {
                 if let Some(ac) = &self.auto_cut {
-                    let mut subdir_path = path.parent().unwrap().to_path_buf();
-                    subdir_path.push(name);
-                    if !subdir_path.exists() {
-                        create_dir(&subdir_path).unwrap_or(());
-                        // println!("Made dir at path: {:?}", subdir_path);
+                    if ac.create_subdirectory {
+                        let mut subdir_path = path.parent().unwrap().to_path_buf();
+                        subdir_path.push(name);
+                        if !subdir_path.exists() {
+                            create_dir(&subdir_path).unwrap_or(());
+                            // println!("Made dir at path: {:?}", subdir_path);
+                        }
                     }
                     ac.create_subdirectory
                 }
