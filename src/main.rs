@@ -1,4 +1,4 @@
-use std::{fs, io, path::Path, process::exit};
+use std::{fs::{self, create_dir, remove_file}, io, path::Path, process::exit};
 
 use hound::WavReader;
 use ignore::{DirEntry, WalkBuilder};
@@ -34,6 +34,8 @@ struct AutoCut {
     min_silence_length_ms: f32,
     min_length_per_sample_ms: f32,
     numbering_postfix: String,
+    create_subdirectory: bool,
+    delete_original: bool, // TODO: unused
 }
 
 
@@ -43,6 +45,8 @@ impl AutoCut {
             min_silence_length_ms: 20.0,
             min_length_per_sample_ms: 300.0,
             numbering_postfix: "-".to_string(),
+            create_subdirectory: false,
+            delete_original: false,
         }
     }
 }
@@ -68,7 +72,7 @@ impl WavProcessor {
 
 
     fn process_wav<T, R>(&self, path: &Path, reader: &mut WavReader<R>, deviation: T)
-where 
+where
         T: hound::Sample + PartialOrd<T> + std::ops::Neg<Output = T> + Copy + Default + Ord + std::fmt::Debug,
         R: io::Read
     {
@@ -134,7 +138,7 @@ where
                 // save new singular wav
                 if let Err(msg) = self.save_new_wav::<T>(&new_channels, &mut reader.spec(), path, None) {
                     println!("{msg}");
-                }   
+                }
             }
         }
         else {
@@ -146,23 +150,29 @@ where
 
         // println!("\n\t================================================\n");
     }
-    
+
+
+
+
 
     fn get_sample_len_from_ms(ms: &f32, sample_rate: &u32) -> u32 {
         (ms / 1000_f32 * (*sample_rate) as f32) as u32
     }
 
 
+
+
+
     fn get_silence_ranges<T, R>(&self, channels: &Vec<Vec<T>>, reader: &mut WavReader<R>, ac: &AutoCut, deviation: T) -> Option<Vec<(usize, usize)>>
-where 
+where
         T: hound::Sample + PartialOrd<T> + std::ops::Neg<Output = T> + Copy + Default + Ord + std::fmt::Debug,
         R: io::Read,
     {
         let sample_rate = reader.spec().sample_rate.clone();
         let silence_min_length_samples = WavProcessor::get_sample_len_from_ms(&ac.min_silence_length_ms, &sample_rate);
-        let sample_min_length_samples = WavProcessor::get_sample_len_from_ms(&ac.min_length_per_sample_ms, &sample_rate);
+        // let sample_min_length_samples = WavProcessor::get_sample_len_from_ms(&ac.min_length_per_sample_ms, &sample_rate);
         // println!("min silence length: {}, min samples length: {}", silence_min_length_samples, sample_min_length_samples);
-        
+
         let mut silence_ranges_per_channel: Vec<Vec<(usize, usize)>> = Vec::with_capacity(10);
 
         for channel in channels {
@@ -190,7 +200,7 @@ where
                     }
                 }
             }
-            
+
             if silence_ranges_vec.len() > 0 {
                 silence_ranges_per_channel.push(silence_ranges_vec);
             }
@@ -212,7 +222,7 @@ where
                 if most_silences_vec.is_none() {
                     return None;
                 }
-                
+
                 // if other start > this start but <= this.end, then this.start = other.start
                 // if other end > this start but <= this.end, then this.end = other.end
                 for this_silence in &mut most_silences_vec.unwrap().clone() {
@@ -235,9 +245,14 @@ where
 
         final_silences_all_channels
     }
-    
+
+
+
+
+
+
     fn try_saving_auto_cuts<T>(&self, silence_ranges: &mut Option<Vec<(usize, usize)>>, spec: &mut hound::WavSpec, ac: &AutoCut, new_channels: &mut Vec<Vec<T>>, path: &Path) -> Result<(), String>
-where 
+where
     T: hound::Sample + PartialOrd<T> + std::ops::Neg<Output = T> + Copy + Default + Ord + std::fmt::Debug,
     {
         let sample_rate = spec.sample_rate;
@@ -251,7 +266,7 @@ where
                 if range.1 - range.0 < min_silence_len {
                     remove_idxs.push(i);
                 }
-                
+
             }
             // remove all silences that were too short
             for (_, i) in remove_idxs.iter().rev().enumerate() { // reverse to make sure indexes don't change because originally they go up, which would do -1 at each number
@@ -259,7 +274,7 @@ where
             }
 
             remove_idxs.clear();
-            
+
             if ranges.len() <= 0 { return Err("Ranges length was 0".to_string()); }
 
             // check if sample lengths are still good
@@ -340,9 +355,14 @@ where
         Ok(())
     }
 
+
+
+
+
+
     /// saves channel data into the path that was passed in.
     fn save_new_wav<T>(&self, channels: &Vec<Vec<T>>, spec: &mut hound::WavSpec, path: &Path, postfix: Option<&str>) -> Result<(), String>
-where 
+where
         T: hound::Sample + PartialOrd<T> + std::ops::Neg<Output = T> + Copy + Default + Ord + std::fmt::Debug,
     {
         spec.channels = channels.len() as u16;
@@ -373,7 +393,33 @@ where
                 _ => "default_name"
             };
             let f_name = format!("{name}{}{}.wav", if self.overwrite_input {""} else {"_stripped"} , if let Some(pf) = postfix {pf} else {""});
-            path.with_file_name(f_name)
+
+
+            // check if you should create a subdirectory
+            let create_subdir: bool = {
+                if let Some(ac) = &self.auto_cut {
+                    let mut subdir_path = path.parent().unwrap().to_path_buf();
+                    subdir_path.push(name);
+                    if !subdir_path.exists() {
+                        create_dir(&subdir_path).unwrap_or(());
+                        // println!("Made dir at path: {:?}", subdir_path);
+                    }
+                    ac.create_subdirectory
+                }
+                else { false }
+            };
+
+            // check if you should delete the original:
+            if let Some(ac) = &self.auto_cut {
+                if ac.delete_original {
+                    if path.is_file() && path.exists() {
+                        remove_file(path).unwrap();
+                    }
+                }
+            }
+
+            path.with_file_name(format!("{}{}", if create_subdir {name.to_string() + "/"} else {"".to_string()}, f_name))
+            // path.with_file_name(f_name)
         };
 
         let writer = hound::WavWriter::create(&path, *spec);
@@ -389,7 +435,7 @@ where
             Err(e) => {
                 return Err(format!("couldn't open writer\n{e}\npath: {:?}", path));
             }
-        } 
+        }
     }
 
 
@@ -454,6 +500,11 @@ where
 
 }
 
+
+
+
+
+
 /// Returns (db, is_overwrite, should_delete_empty)
 fn process_args() -> (f32, bool, bool, Option<AutoCut>) {
     let help_arg = String::from("-h");
@@ -464,6 +515,8 @@ fn process_args() -> (f32, bool, bool, Option<AutoCut>) {
     let auto_cut_min_silence_len_ms_arg = String::from("-acsilence=");
     let auto_cut_min_sample_len_ms_arg = String::from("-acsample=");
     let auto_cut_postfix_arg = String::from("-acpostfix=");
+    let auto_cut_subdir_arg = String::from("-acsubdir");
+    let auto_cut_delete_original_arg = String::from("-acdelete");
 
     let mut db = -60.0;
     let mut should_overwrite = false;
@@ -478,7 +531,7 @@ fn process_args() -> (f32, bool, bool, Option<AutoCut>) {
         println!("\n\n\t[EXAMPLE]");
         println!("wav_optimizer.exe -db=-55.7 -o -rm");
         println!("wav_optimizer.exe -db=-40 -o -rm -ac -acsilence=202.1 -acsample=250 -acpostfix='.'");
-        println!("\n\n\t[OPTIONS]\n-db=\t\tset a float value for the minimum dB the sample should be at the end when trimming. If not specified, it defaults to -60 dB\n\n-o\t\tif specified in the args, will overwrite the input files with the trimmed version. Otherwise it will add a suffix to the name and make a new file.\n\n-rm\t\tIf specified in the args, will delete input files which are deemed empty (because of the '-db' arg).\n\n-ac\t\tWill enable auto cutting up the sample at silences, this will then export multiple smaller files which contain audio data over the threshold.\n\n-acsilence=\tThe minimum amount of milliseconds the samples need to be under the threshold to recognize it as a separate sample.\n\n-acsample=\tThe minimum amount of milliseconds a cut sample needs to be before being recognized as a separate sample.\n\n-acpostfix=\tThe postfix to use before numbering. For example inputfile-01 or inputfile.01.");
+        println!("\n\n\t[OPTIONS]\n-db=\t\tset a float value for the minimum dB the sample should be at the end when trimming. If not specified, it defaults to -60 dB\n\n-o\t\tif specified in the args, will overwrite the input files with the trimmed version. Otherwise it will add a suffix to the name and make a new file.\n\n-rm\t\tIf specified in the args, will delete input files which are deemed empty (because of the '-db' arg).\n\n-ac\t\tWill enable auto cutting up the sample at silences, this will then export multiple smaller files which contain audio data over the threshold.\n\n-acsilence=\tThe minimum amount of milliseconds the samples need to be under the threshold to recognize it as a separate sample.\n\n-acsample=\tThe minimum amount of milliseconds a cut sample needs to be before being recognized as a separate sample.\n\n-acpostfix=\tThe postfix to use before numbering. For example inputfile-01 or inputfile.01.\n\n-acsubdir\tWill add the outputted cuts into a subfolder with the name of the original file.\n\n-acdelete\tWill delete the original (long) sample after creating the cuts.");
         exit(0);
     }
 
@@ -493,13 +546,13 @@ fn process_args() -> (f32, bool, bool, Option<AutoCut>) {
     if let Some(_) = std::env::args().into_iter().find(|a| a == &delete_empty_arg) {
         delete_empty = true;
     }
-    
+
     // NOTE: AutoCut functions
 
     if let Some(_) = std::env::args().into_iter().find(|a| a == &auto_cut_arg) {
         auto_cut = Some(AutoCut::default());
     }
-    
+
     if let Some(ms_str) = std::env::args().into_iter().find(|a| a.contains(&auto_cut_min_silence_len_ms_arg)) {
         if let Some(ac) = &mut auto_cut {
             ac.min_silence_length_ms = ms_str.strip_prefix(&auto_cut_min_silence_len_ms_arg).unwrap().parse().unwrap_or(ac.min_silence_length_ms);
@@ -515,6 +568,18 @@ fn process_args() -> (f32, bool, bool, Option<AutoCut>) {
     if let Some(postfix_str) = std::env::args().into_iter().find(|a| a.contains(&auto_cut_postfix_arg)) {
         if let Some(ac) = &mut auto_cut {
             ac.numbering_postfix = postfix_str.strip_prefix(&auto_cut_postfix_arg).unwrap().parse().unwrap_or(ac.numbering_postfix.to_string());
+        }
+    }
+
+    if let Some(_) = std::env::args().into_iter().find(|a| a == &auto_cut_subdir_arg) {
+        if let Some(ac) = &mut auto_cut {
+            ac.create_subdirectory = true;
+        }
+    }
+
+    if let Some(_) = std::env::args().into_iter().find(|a| a == &auto_cut_delete_original_arg) {
+        if let Some(ac) = &mut auto_cut {
+            ac.delete_original = true;
         }
     }
 
